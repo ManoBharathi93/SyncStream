@@ -9,6 +9,7 @@ SyncStream is a production-inspired CDC platform that captures PostgreSQL row ch
 - Includes an admin dashboard and management APIs for operational workflows.
 
 ## Architecture at a Glance
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/39e5d14a-e8be-4f9b-b1ed-07b38190c622" />
 
 1. PostgreSQL emits WAL changes.
 2. Debezium captures changes and writes Kafka topics (`syncstream.public.*`).
@@ -75,3 +76,19 @@ python scripts/verify-admin-dashboard.py
 - `docs/REPOSITORY_STRUCTURE.md`: curated repo map.
 - `docs/architecture/ARCHITECTURE.md`: system architecture and data flow.
 - `docs/requirements/REQUIREMENTS.md`: functional and non-functional requirements.
+
+  ## Experiment Results:
+  ### 1. Change Data Capture:
+  <img width="942" height="823" alt="image" src="https://github.com/user-attachments/assets/45fc97fe-6ea5-491a-b53f-6e425bf24c08" />
+
+  ### 2. Dual write Path:
+  <img width="920" height="742" alt="image" src="https://github.com/user-attachments/assets/c920a68c-a6be-4b59-be5a-7d9d252572b9" />
+
+  ### 3. Polling:
+  <img width="937" height="828" alt="image" src="https://github.com/user-attachments/assets/e9ce074c-2c45-44b9-8112-5c7b6d226d91" />
+
+
+# TradeOff radar:
+<img width="898" height="723" alt="image" src="https://github.com/user-attachments/assets/794bb4e6-bfad-4e48-a8b5-4eaf6c74e108" />
+
+  
