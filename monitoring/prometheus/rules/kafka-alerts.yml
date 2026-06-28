@@ -1,0 +1,141 @@
+# ─────────────────────────────────────────────────────────
+# Prometheus Alerting Rules — SyncStream Kafka
+# ─────────────────────────────────────────────────────────
+#
+# HOW PROMETHEUS ALERTING WORKS
+# ─────────────────────────────────────────────────────────
+# 1. Prometheus evaluates every rule on each evaluation_interval.
+# 2. If a rule's expr returns data, the alert enters PENDING state.
+# 3. After staying true for `for:` duration, it becomes FIRING.
+# 4. Firing alerts appear in the Prometheus /alerts UI and can be
+#    routed to Alertmanager → PagerDuty/Slack/email in production.
+#
+# WHY `for:` MATTERS
+#   Without `for`, a single spike triggers the alert immediately.
+#   With `for: 2m`, the condition must hold for 2 full minutes.
+#   This prevents alert storms from transient blips.
+#
+# SEVERITY LABELS
+#   These are conventions, not enforcement. In production they map
+#   to routing rules in Alertmanager:
+#     critical  → wake someone up at 3 AM (PagerDuty)
+#     warning   → Slack notification, business hours
+#     info      → dashboard annotation, no notification
+# ─────────────────────────────────────────────────────────
+
+groups:
+
+  - name: kafka_consumer_lag
+    interval: 30s  # evaluate these rules every 30s (override global)
+
+    rules:
+
+      # ── ALERT: Consumer lag has grown above the warning threshold ──
+      #
+      # kafka_consumergroup_lag measures how many messages a consumer
+      # group is behind the latest produced offset on a given partition.
+      #
+      # A lag of 0 means fully caught up.
+      # A lag of 500 means 500 events are waiting to be processed.
+      #
+      # Threshold of 500 is intentionally low for local learning:
+      # In production you would tune this per SLA (e.g. 10,000).
+      - alert: KafkaConsumerGroupHighLag
+        expr: kafka_consumergroup_lag > 500
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer group {{ $labels.consumergroup }} is falling behind"
+          description: >
+            Consumer group {{ $labels.consumergroup }} has a lag of {{ $value }}
+            on topic {{ $labels.topic }} partition {{ $labels.partition }}.
+            This means {{ $value }} events are waiting to be processed.
+            Investigate whether the consumer is running and healthy.
+
+      # ── ALERT: Consumer lag is critically high ──
+      #
+      # Same metric, higher threshold, higher severity.
+      # This models the two-tier alerting pattern used in production:
+      #   warning → team gets notified during business hours
+      #   critical → on-call engineer is paged immediately
+      - alert: KafkaConsumerGroupCriticalLag
+        expr: kafka_consumergroup_lag > 5000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Consumer group {{ $labels.consumergroup }} has severe lag"
+          description: >
+            Consumer group {{ $labels.consumergroup }} has a critical lag of {{ $value }}
+            on topic {{ $labels.topic }} partition {{ $labels.partition }}.
+            State recovery may be required. Check consumer health immediately.
+
+      # ── ALERT: Lag is actively growing (not just high) ──
+      #
+      # increase(metric[window]) measures how much a counter increased
+      # over the window. Using increase() on lag detects a consumer that
+      # is processing events but not keeping up with the producer rate.
+      #
+      # This catches the scenario where lag is not yet above the threshold
+      # but is trending upward — important for early warning before SLA breach.
+      - alert: KafkaConsumerGroupLagGrowing
+        expr: increase(kafka_consumergroup_lag[10m]) > 200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer group {{ $labels.consumergroup }} lag is trending up"
+          description: >
+            Consumer group {{ $labels.consumergroup }} lag on topic
+            {{ $labels.topic }} partition {{ $labels.partition }}
+            increased by {{ $value }} messages in the last 10 minutes.
+            The consumer is processing events but not keeping up with the producer.
+
+  - name: kafka_topics
+    interval: 60s
+
+    rules:
+
+      # ── ALERT: A CDC topic has received no new messages in 30 minutes ──
+      #
+      # This detects a stalled Debezium connector or WAL reader.
+      # increase() on oldest_offset being 0 while current_offset is static
+      # is not reliable — instead we use delta on current_offset directly.
+      #
+      # In normal operation, PostgreSQL WAL generates heartbeat events
+      # even when there are no data changes (heartbeat.interval.ms).
+      # If current_offset stops moving for 30 minutes, the connector is stalled.
+      - alert: KafkaCDCTopicStalled
+        expr: >
+          increase(kafka_topic_partition_current_offset{topic=~"syncstream\\..*"}[30m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CDC topic {{ $labels.topic }} partition {{ $labels.partition }} is stalled"
+          description: >
+            No new messages have been produced to topic {{ $labels.topic }}
+            partition {{ $labels.partition }} in the last 30 minutes.
+            Check whether the Debezium connector is running and the PostgreSQL
+            WAL replication slot is active.
+
+  - name: prometheus_health
+    rules:
+
+      # ── ALERT: A Prometheus scrape target is down ──
+      #
+      # up{} is a synthetic metric set to 1 when a scrape succeeds
+      # and 0 when it fails. This is the most fundamental health check
+      # in a Prometheus-based observability stack.
+      - alert: MonitoringTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Monitoring target {{ $labels.job }} is down"
+          description: >
+            Prometheus cannot scrape metrics from {{ $labels.instance }}
+            (job={{ $labels.job }}). Metrics for this target have been unavailable
+            for at least 2 minutes. Check whether the service is running.

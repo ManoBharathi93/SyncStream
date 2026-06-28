@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────
+# Grafana Dashboard Provisioning
+# ─────────────────────────────────────────────────────────
+#
+# Grafana reads this file at startup and loads every .json file
+# found in the `path` directory as a dashboard.
+#
+# Why provision dashboards as files instead of importing via UI?
+#   - Dashboards survive container restarts and re-provisioning.
+#   - They are version-controlled in the repo alongside the code
+#     that produces the metrics being visualized.
+#   - Required for automated setups (CI, staging, new dev onboarding).
+#
+# disableDeletion: true
+#   Prevents Grafana UI from deleting provisioned dashboards.
+#   You must edit the JSON file to remove a provisioned dashboard.
+#
+# editable: true
+#   Allows UI edits for exploration. Changes made in the UI are
+#   not persisted back to the JSON file — restart reverts them.
+#   In production set this to false.
+# ─────────────────────────────────────────────────────────
+
+apiVersion: 1
+
+providers:
+  - name: syncstream-dashboards
+    orgId: 1
+    type: file
+    disableDeletion: true
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/files

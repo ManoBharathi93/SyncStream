@@ -1,0 +1,171 @@
+{
+  "_comment": [
+    "SyncStream — Debezium PostgreSQL Connector Configuration",
+    "",
+    "This file is NOT used directly by Docker Compose.",
+    "It is the request body you POST to Debezium's REST API.",
+    "See: scripts/register-connector.sh for how to register it.",
+    "",
+    "WHY a REST API instead of a config file?",
+    "  Kafka Connect is designed to run connectors dynamically.",
+    "  You can add, remove, update, pause, and resume connectors",
+    "  without restarting any container. This is how production",
+    "  CDC systems work — connectors are managed at runtime.",
+    "",
+    "The JSON structure:",
+    "  'name'   → unique identifier for this connector instance",
+    "  'config' → connector-specific settings"
+  ],
+  "name": "postgres-cdc-connector",
+  "config": {
+
+    "_section_connector_class": "--- What type of connector is this? ---",
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+
+    "_section_postgres_connection": "--- How to connect to PostgreSQL ---",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "syncstream",
+    "database.password": "syncstream_pass",
+    "database.dbname": "syncstream_db",
+
+    "_section_connector_identity": "--- Connector identity (affects topic names and offset keys) ---",
+    "topic.prefix": "syncstream",
+
+    "_comment_topic_naming": [
+      "topic.prefix controls how Kafka topics are named.",
+      "Pattern: {prefix}.{schema}.{table}",
+      "With prefix='syncstream':",
+      "  syncstream.public.products",
+      "  syncstream.public.customers",
+      "  syncstream.public.orders",
+      "  syncstream.public.order_items"
+    ],
+
+    "_section_replication_slot": "--- PostgreSQL replication slot settings ---",
+    "slot.name": "debezium_syncstream_slot",
+    "plugin.name": "pgoutput",
+
+    "_comment_plugin": [
+      "plugin.name='pgoutput' is PostgreSQL's built-in logical decoding plugin.",
+      "Available since PostgreSQL 10. No extra installation needed.",
+      "Alternative: 'decoderbufs' (requires a PostgreSQL extension to be installed).",
+      "We use pgoutput because it ships with PostgreSQL out of the box."
+    ],
+
+    "_section_table_selection": "--- Which tables to capture ---",
+    "table.include.list": "public.products,public.customers,public.orders,public.order_items",
+
+    "_comment_table_include": [
+      "Whitelist approach: only named tables are captured.",
+      "Format: {schema}.{table}",
+      "Unspecified tables are silently ignored.",
+      "Alternative: table.exclude.list (blacklist — capture everything EXCEPT listed tables).",
+      "Whitelist is safer in production: new tables don't accidentally get captured."
+    ],
+
+    "_section_snapshot": "--- Initial snapshot behaviour ---",
+    "snapshot.mode": "initial",
+
+    "_comment_snapshot_mode": [
+      "snapshot.mode options:",
+      "  'initial'   → Snapshot existing data on first run, then stream changes.",
+      "                On subsequent runs (restart), skip snapshot and resume streaming.",
+      "                This is the standard production setting.",
+      "",
+      "  'always'    → Snapshot ALL data on EVERY restart.",
+      "                Causes duplicate 'r' events in Kafka on each restart.",
+      "                Only use if you need to rebuild consumers from scratch regularly.",
+      "",
+      "  'never'     → Skip snapshot entirely. Only stream future changes.",
+      "                Use after initial snapshot is complete and you're iterating.",
+      "",
+      "  'exported'  → Advanced: snapshot from a known PostgreSQL backup.",
+      "",
+      "We use 'initial' so that downstream systems (Redis, ES) are bootstrapped",
+      "with existing data before streaming begins."
+    ],
+
+    "_section_behavior": "--- Event behaviour settings ---",
+    "tombstones.on.delete": "true",
+
+    "_comment_tombstones": [
+      "tombstones.on.delete=true means that for every DELETE event,",
+      "Debezium publishes TWO Kafka messages:",
+      "  1. The delete event: key={id:1}, value={op:'d', before:{...}}",
+      "  2. The tombstone:    key={id:1}, value=null",
+      "",
+      "WHY tombstones?",
+      "  Kafka log compaction removes old messages for the same key,",
+      "  keeping only the latest value. Without a tombstone, the last",
+      "  event for a deleted row would be the DELETE event — keeping it",
+      "  forever. A null tombstone signals to Kafka: 'this key is gone,",
+      "  you can remove all history for it.'",
+      "",
+      "For our consumers:",
+      "  We check op='d' to trigger deletion in Redis/ES.",
+      "  We IGNORE tombstones (null values) — they are for Kafka's benefit."
+    ],
+
+    "decimal.handling.mode": "double",
+
+    "_comment_decimal": [
+      "PostgreSQL NUMERIC/DECIMAL types are arbitrary precision.",
+      "Kafka/JSON doesn't have an arbitrary precision type.",
+      "Options:",
+      "  'precise'  → Encoded as bytes (exact, but Java needs special handling)",
+      "  'double'   → Converted to Java double (slight precision loss for large values)",
+      "  'string'   → Encoded as string (safe, but consumers must parse)",
+      "",
+      "We use 'double' for simplicity during learning.",
+      "For financial data in production: use 'string' or 'precise'.",
+      "Our prices are small enough that double precision is fine."
+    ],
+
+    "time.precision.mode": "connect",
+
+    "_comment_time": [
+      "PostgreSQL TIMESTAMPTZ → how to encode in Kafka events.",
+      "  'adaptive'  → epoch milliseconds (an integer)",
+      "  'connect'   → ISO-8601 string (human-readable)",
+      "",
+      "We use 'connect' during learning because ISO-8601 is readable",
+      "in the Kafka UI without mental epoch conversion.",
+      "In production: 'adaptive' is more efficient."
+    ],
+
+    "_section_performance": "--- Performance and batching ---",
+    "max.batch.size": "2048",
+    "max.queue.size": "8192",
+    "poll.interval.ms": "500",
+
+    "_comment_performance": [
+      "max.batch.size: maximum number of events Debezium reads from WAL at once.",
+      "max.queue.size: internal buffer size between WAL reader and Kafka publisher.",
+      "poll.interval.ms: how often to check for new WAL entries (milliseconds).",
+      "",
+      "These are sensible defaults for development.",
+      "In production at high throughput: increase batch sizes,",
+      "tune poll.interval.ms based on acceptable latency."
+    ],
+
+    "_section_heartbeat": "--- Heartbeat (important for low-traffic tables) ---",
+    "heartbeat.interval.ms": "10000",
+
+    "_comment_heartbeat": [
+      "CRITICAL SETTING — often overlooked.",
+      "",
+      "Problem: If a table has very few writes, Debezium doesn't advance",
+      "its WAL position for a long time. PostgreSQL cannot clean up old WAL",
+      "because the replication slot position hasn't moved.",
+      "Result: WAL disk space fills up, database crashes.",
+      "",
+      "Solution: Debezium writes a heartbeat event to a special Kafka topic",
+      "every 10 seconds (10000ms). This causes the WAL position to advance",
+      "even when there are no data changes.",
+      "",
+      "The heartbeat topic is: syncstream.debezium-heartbeat",
+      "Consumers should ignore events on this topic."
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Generated script outputs
+scripts/replay-preflight-report-*.json
+
+# IDE/system noise
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Build outputs
+**/target/

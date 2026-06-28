@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────
+# Prometheus Scrape Configuration — SyncStream
+# ─────────────────────────────────────────────────────────
+#
+# How Prometheus works:
+#   Prometheus is a PULL-based system. It calls each target's
+#   /metrics HTTP endpoint on a schedule and stores the results
+#   as time-series data (metric_name{labels} value timestamp).
+#
+# scrape_interval:
+#   How often Prometheus collects metrics. 15s is the standard
+#   default. Lower values increase storage and CPU usage.
+#
+# evaluation_interval:
+#   How often Prometheus evaluates alerting rules defined in
+#   rule_files. Must be >= scrape_interval.
+# ─────────────────────────────────────────────────────────
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+    project: syncstream
+
+# ─────────────────────────────────────────────────────────
+# ALERTING RULES
+#
+# rule_files lists files (or glob patterns) that contain alerting
+# and recording rules. Prometheus reloads these on SIGHUP or via
+# the /-/reload endpoint (requires --web.enable-lifecycle).
+#
+# Rules are organised into named groups inside each file.
+# Each group has its own evaluation interval and a list of rules.
+# ─────────────────────────────────────────────────────────
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# ─────────────────────────────────────────────────────────
+# SCRAPE TARGETS
+#
+# Each job_name groups a set of scraped endpoints.
+# Prometheus labels every metric with job= and instance=
+# so you can filter by service in Grafana.
+# ─────────────────────────────────────────────────────────
+scrape_configs:
+
+  # Prometheus scrapes itself so you can monitor the monitor.
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+
+  # kafka-exporter exposes per-topic and per-consumer-group
+  # lag metrics by connecting to Kafka via the consumer API.
+  # Key metrics:
+  #   kafka_consumergroup_lag            → messages behind per partition
+  #   kafka_topic_partition_current_offset
+  #   kafka_topic_partition_oldest_offset
+  - job_name: kafka
+    static_configs:
+      - targets:
+          - kafka-exporter:9308
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: syncstream-kafka

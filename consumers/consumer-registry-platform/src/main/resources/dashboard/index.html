@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SyncStream Admin Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #091322;
+      --bg-2: #0d1a2f;
+      --panel: rgba(11, 22, 40, 0.95);
+      --line: rgba(137, 197, 255, 0.20);
+      --text: #edf4ff;
+      --muted: #8ca3c7;
+      --accent: #5fd6c2;
+      --warn: #ffbf69;
+      --danger: #ff8787;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(95, 214, 194, 0.18), transparent 30%),
+        radial-gradient(circle at 92% 6%, rgba(119, 167, 255, 0.22), transparent 28%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 1540px;
+      margin: 0 auto;
+      padding: 22px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.45fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .banner, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+    }
+
+    .banner { padding: 22px; }
+    .banner h1 { margin: 0 0 8px; font-size: 34px; letter-spacing: -0.03em; }
+    .banner p { margin: 0; color: var(--muted); max-width: 840px; line-height: 1.5; }
+    .badge-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+    .badge {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--line);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .stat {
+      padding: 14px;
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(17, 31, 58, 0.95), rgba(9, 18, 34, 0.95));
+      border: 1px solid var(--line);
+    }
+    .stat label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .stat strong { font-size: 24px; display: block; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .sidebar { position: sticky; top: 10px; padding: 16px; }
+    .nav-title {
+      margin: 0 0 12px;
+      font-size: 13px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .nav { display: grid; gap: 8px; }
+    .nav button {
+      text-align: left;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.03);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .nav button.active {
+      background: linear-gradient(135deg, rgba(95,214,194,0.18), rgba(119,167,255,0.18));
+      border-color: rgba(137,197,255,0.45);
+    }
+
+    .content { min-width: 0; }
+    .content .panel { padding: 18px; }
+    .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
+    .panel { min-height: 200px; }
+    .panel.wide { grid-column: span 12; }
+    .panel.third { grid-column: span 4; }
+    .panel h2 { margin: 0 0 14px; font-size: 18px; }
+    .list { display: grid; gap: 10px; }
+    .row {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 1fr 0.8fr;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      color: var(--text);
+    }
+    .row span.muted { color: var(--muted); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid transparent;
+    }
+    .pill.ok { background: rgba(95,214,194,0.14); color: var(--accent); border-color: rgba(95,214,194,0.24); }
+    .pill.warn { background: rgba(255,191,105,0.14); color: var(--warn); border-color: rgba(255,191,105,0.24); }
+    .pill.danger { background: rgba(255,135,135,0.14); color: var(--danger); border-color: rgba(255,135,135,0.24); }
+
+    .subtle { color: var(--muted); font-size: 13px; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+    .button {
+      padding: 10px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .button.primary { background: linear-gradient(135deg, rgba(95,214,194,0.18), rgba(119,167,255,0.18)); }
+
+    .form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .form input {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+    }
+
+    .chart { display: grid; gap: 8px; }
+    .bar {
+      display: grid;
+      grid-template-columns: 180px 1fr 70px;
+      gap: 8px;
+      align-items: center;
+    }
+    .bar-track {
+      height: 10px;
+      border-radius: 99px;
+      background: rgba(255,255,255,0.1);
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, rgba(95,214,194,0.9), rgba(119,167,255,0.9));
+    }
+
+    .hidden { display: none; }
+
+    @media (max-width: 1100px) {
+      .hero, .grid, .layout { grid-template-columns: 1fr; }
+      .sidebar { position: static; }
+      .panel.third, .panel.wide { grid-column: span 12; }
+    }
+
+    @media (max-width: 720px) {
+      .shell { padding: 16px; }
+      .banner h1 { font-size: 30px; }
+      .row { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr; }
+      .form { grid-template-columns: 1fr; }
+      .bar { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="hero">
+      <section class="banner">
+        <h1>SyncStream Admin Dashboard</h1>
+        <p>Operational visibility and management for Kafka, consumer registry, DLQ activity and replay workflows. This UI is self-contained and runs without external frontend dependencies.</p>
+        <div class="badge-row">
+          <span class="badge" id="badge-role">Role: admin</span>
+          <span class="badge" id="badge-state">Status: loading</span>
+          <span class="badge" id="badge-msg">Loading dashboard...</span>
+        </div>
+      </section>
+      <section class="stats panel">
+        <div class="stats">
+          <div class="stat"><label>Registered consumers</label><strong id="stat-consumers">-</strong></div>
+          <div class="stat"><label>Topics observed</label><strong id="stat-topics">-</strong></div>
+          <div class="stat"><label>DLQ events</label><strong id="stat-dlq">-</strong></div>
+          <div class="stat"><label>Replay requests</label><strong id="stat-replay">-</strong></div>
+        </div>
+        <div class="toolbar" style="margin-top:16px">
+          <button class="button primary" id="toggle-role">Toggle Role</button>
+          <button class="button" id="refresh">Refresh</button>
+        </div>
+        <div class="subtle" id="registry-meta">Registry: - | Kafka brokers: -</div>
+      </section>
+    </div>
+
+    <div class="layout">
+      <aside class="sidebar panel">
+        <p class="nav-title">Pages</p>
+        <div class="nav" id="nav"></div>
+      </aside>
+
+      <main class="content">
+        <section id="page-cdc" class="panel page"></section>
+        <section id="page-connectors" class="panel page hidden"></section>
+        <section id="page-topics" class="panel page hidden"></section>
+        <section id="page-consumer-health" class="panel page hidden"></section>
+        <section id="page-dlq" class="panel page hidden"></section>
+        <section id="page-replay" class="panel page hidden"></section>
+        <section id="page-registered" class="panel page hidden"></section>
+        <section id="page-metrics" class="panel page hidden"></section>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    let role = 'admin';
+    const actor = 'dashboard-user';
+    let state = {
+      health: null,
+      topics: [],
+      consumers: [],
+      dlq: [],
+      replay: [],
+      metrics: {},
+      registered: []
+    };
+
+    const pages = [
+      { id: 'cdc', label: '1. CDC Status' },
+      { id: 'connectors', label: '2. Connector Status' },
+      { id: 'topics', label: '3. Kafka Topics' },
+      { id: 'consumer-health', label: '4. Consumer Health' },
+      { id: 'dlq', label: '5. DLQ Events' },
+      { id: 'replay', label: '6. Replay Requests' },
+      { id: 'registered', label: '7. Registered Consumers' },
+      { id: 'metrics', label: '8. Metrics Dashboard' }
+    ];
+
+    let currentPage = 'cdc';
+
+    function esc(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function row(a, b, c, d, pillClass) {
+      return '<div class="row"><span>' + a + '</span><span class="muted">' + b + '</span><span class="muted">' + c + '</span><span class="pill ' + (pillClass || 'ok') + '">' + d + '</span></div>';
+    }
+
+    function setText(id, value) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
+    function setHtml(id, value) {
+      var el = document.getElementById(id);
+      if (el) el.innerHTML = value;
+    }
+
+    function statusPill(status) {
+      const raw = String(status || 'unknown').toLowerCase();
+      if (raw.indexOf('critical') >= 0 || raw.indexOf('failed') >= 0 || raw.indexOf('down') >= 0) return 'danger';
+      if (raw.indexOf('degraded') >= 0 || raw.indexOf('warn') >= 0 || raw.indexOf('lag') >= 0) return 'warn';
+      return 'ok';
+    }
+
+    async function api(path, method, payload) {
+      const options = {
+        method: method || 'GET',
+        headers: {
+          'X-User-Role': role,
+          'X-User-Name': actor,
+          'Content-Type': 'application/json'
+        }
+      };
+      if (payload) options.body = JSON.stringify(payload);
+      const response = await fetch(path, options);
+      let body = null;
+      try { body = await response.json(); } catch (e) { body = null; }
+      if (!response.ok) {
+        const msg = body && body.message ? body.message : ('HTTP ' + response.status);
+        throw new Error(msg);
+      }
+      return body;
+    }
+
+    function initNav() {
+      setHtml('nav', pages.map(function (p) {
+        return '<button data-page="' + p.id + '">' + esc(p.label) + '</button>';
+      }).join(''));
+      document.querySelectorAll('#nav button').forEach(function (button) {
+        button.addEventListener('click', function () {
+          showPage(button.getAttribute('data-page'));
+        });
+      });
+      updateNav();
+    }
+
+    function updateNav() {
+      document.querySelectorAll('#nav button').forEach(function (button) {
+        button.classList.toggle('active', button.getAttribute('data-page') === currentPage);
+      });
+    }
+
+    function showPage(pageId) {
+      currentPage = pageId;
+      document.querySelectorAll('.page').forEach(function (section) {
+        section.classList.add('hidden');
+      });
+      const target = document.getElementById('page-' + pageId);
+      if (target) target.classList.remove('hidden');
+      updateNav();
+      renderPages();
+    }
+
+    function renderCDCPage() {
+      const health = state.health || {};
+      const cdc = health.cdc || {};
+      const kafka = health.kafka || {};
+      const registry = health.registry || {};
+      setHtml('page-cdc',
+        '<h2>CDC Status</h2>' +
+        '<p class="subtle">Generated: ' + esc(health.generatedAt || 'n/a') + '</p>' +
+        '<div class="grid">' +
+          '<div class="panel third"><h2>CDC</h2>' + row('Status', esc(cdc.status || health.status || 'unknown'), 'capture flow', 'state', statusPill(cdc.status || health.status)) + '</div>' +
+          '<div class="panel third"><h2>Kafka</h2>' + row('Status', esc(kafka.status || 'unknown'), esc((kafka.brokerCount || 0) + ' brokers'), 'kafka', statusPill(kafka.status)) + '</div>' +
+          '<div class="panel third"><h2>Registry</h2>' + row('Status', esc(registry.status || 'unknown'), esc((registry.activeConsumers || 0) + ' active'), 'registry', statusPill(registry.status)) + '</div>' +
+        '</div>'
+      );
+    }
+
+    function renderConnectorsPage() {
+      const health = state.health || {};
+      const cdc = health.cdc || {};
+      const connectorRows = [
+        row('cdc-pipeline', esc(cdc.status || health.status || 'unknown'), 'syncstream-core', esc((cdc.message || 'no connector message').slice(0, 32)), statusPill(cdc.status || health.status))
+      ];
+      setHtml('page-connectors',
+        '<h2>Connector Status</h2>' +
+        '<p class="subtle">Current backend exposes CDC health but no dedicated connector inventory endpoint yet. This page surfaces connector-grade status from health data.</p>' +
+        '<div class="list">' + connectorRows.join('') + '</div>'
+      );
+    }
+
+    function renderTopicsPage() {
+      const topics = state.topics || [];
+      const maxLag = Math.max(1, ...topics.map(function (t) { return Number(t.lag || t.consumerLag || 0); }));
+      const bars = topics.slice(0, 12).map(function (t) {
+        const lag = Number(t.lag || t.consumerLag || 0);
+        const pct = Math.min(100, Math.round((lag / maxLag) * 100));
+        return '<div class="bar"><span class="subtle">' + esc(t.topic || 'unknown') + '</span><div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div><span class="subtle">' + lag + '</span></div>';
+      }).join('');
+      const list = topics.slice(0, 20).map(function (t) {
+        return row(esc(t.topic || 'unknown'), esc((t.partitions || 0) + ' partitions'), 'lag ' + esc(t.lag || t.consumerLag || 0), 'topic', statusPill((t.lag || t.consumerLag || 0) > 0 ? 'degraded' : 'healthy'));
+      }).join('');
+      setHtml('page-topics',
+        '<h2>Kafka Topics</h2>' +
+        '<div class="panel" style="margin-bottom:12px"><h2>Lag Distribution</h2><div class="chart">' + (bars || '<div class="subtle">No topics available</div>') + '</div></div>' +
+        '<div class="list">' + (list || '<div class="subtle">No topics available</div>') + '</div>'
+      );
+    }
+
+    function renderConsumerHealthPage() {
+      const consumers = state.consumers || [];
+      const lagging = consumers.filter(function (c) { return Number(c.lag || 0) > 0; }).length;
+      const disabled = consumers.filter(function (c) { return String(c.status || '').toUpperCase() === 'DISABLED'; }).length;
+      const rows = consumers.slice(0, 30).map(function (c) {
+        const lag = Number(c.lag || 0);
+        return row(esc(c.consumer || 'unknown'), esc(c.topic || 'n/a'), 'lag ' + lag, esc(c.status || 'unknown'), statusPill(lag > 0 ? 'degraded' : c.status));
+      }).join('');
+      setHtml('page-consumer-health',
+        '<h2>Consumer Health</h2>' +
+        '<p class="subtle">Total: ' + consumers.length + ' | Lagging: ' + lagging + ' | Disabled: ' + disabled + '</p>' +
+        '<div class="list">' + (rows || '<div class="subtle">No consumers available</div>') + '</div>'
+      );
+    }
+
+    function renderDLQPage() {
+      const dlq = state.dlq || [];
+      const rows = dlq.slice(0, 40).map(function (d, idx) {
+        return row(esc(d.topic || 'unknown'), 'partition ' + esc(d.partition || 'n/a'), esc(d.errorType || 'unknown'), esc(d.createdAt || ('event-' + idx)), 'warn');
+      }).join('');
+      setHtml('page-dlq',
+        '<h2>DLQ Events</h2>' +
+        '<p class="subtle">Events loaded: ' + dlq.length + '</p>' +
+        '<div class="list">' + (rows || '<div class="subtle">No DLQ events found</div>') + '</div>'
+      );
+    }
+
+    function renderReplayPage() {
+      const replay = state.replay || [];
+      const rows = replay.slice(0, 30).map(function (r) {
+        return row(esc(r.topic || 'n/a'), esc(r.consumerGroup || 'n/a'), esc(r.status || 'n/a'), esc(r.createdBy || 'n/a'), statusPill(r.status));
+      }).join('');
+      setHtml('page-replay',
+        '<h2>Replay Requests</h2>' +
+        '<p class="subtle">Submit replay requests with admin role only.</p>' +
+        '<div class="form">' +
+          '<input id="replay-topic" placeholder="topic (e.g. syncstream.orders)" />' +
+          '<input id="replay-group" placeholder="consumerGroup" />' +
+          '<input id="replay-start" placeholder="startTimestamp (ISO)" />' +
+          '<input id="replay-end" placeholder="endOffset" />' +
+          '<input id="replay-start-offset" placeholder="startOffset" />' +
+          '<input id="replay-reason" placeholder="reason" />' +
+        '</div>' +
+        '<div class="toolbar"><button class="button primary" id="submit-replay">Submit Replay</button></div>' +
+        '<div id="replay-submit-result" class="subtle"></div>' +
+        '<h2 style="margin-top:16px">Recent Replay Queue</h2>' +
+        '<div class="list">' + (rows || '<div class="subtle">No replay requests</div>') + '</div>'
+      );
+      const button = document.getElementById('submit-replay');
+      if (button) button.addEventListener('click', submitReplay);
+    }
+
+    function renderRegisteredPage() {
+      const registrations = state.registered || [];
+      const active = registrations.filter(function (r) { return String(r.status || '').toUpperCase() === 'ACTIVE'; }).length;
+      const disabled = registrations.filter(function (r) { return String(r.status || '').toUpperCase() === 'DISABLED'; }).length;
+      const rows = registrations.slice(0, 40).map(function (r) {
+        return row(esc(r.consumer || 'n/a'), esc(r.topic || 'n/a'), esc(r.environment || 'n/a'), esc(r.status || 'n/a'), statusPill(r.status));
+      }).join('');
+      setHtml('page-registered',
+        '<h2>Registered Consumers</h2>' +
+        '<p class="subtle">Total: ' + registrations.length + ' | Active: ' + active + ' | Disabled: ' + disabled + '</p>' +
+        '<div class="list">' + (rows || '<div class="subtle">No registered consumers found</div>') + '</div>'
+      );
+    }
+
+    function renderMetricsPage() {
+      setHtml('page-metrics',
+        '<h2>Metrics Dashboard</h2>' +
+        '<p class="subtle">Raw metrics payload from /api/v1/dashboard/metrics</p>' +
+        '<pre class="subtle" style="margin:0;white-space:pre-wrap">' + esc(JSON.stringify(state.metrics || {}, null, 2)) + '</pre>'
+      );
+    }
+
+    function renderPages() {
+      renderCDCPage();
+      renderConnectorsPage();
+      renderTopicsPage();
+      renderConsumerHealthPage();
+      renderDLQPage();
+      renderReplayPage();
+      renderRegisteredPage();
+      renderMetricsPage();
+    }
+
+    async function submitReplay() {
+      const payload = {
+        topic: (document.getElementById('replay-topic').value || '').trim(),
+        consumerGroup: (document.getElementById('replay-group').value || '').trim(),
+        startTimestamp: (document.getElementById('replay-start').value || '').trim(),
+        startOffset: (document.getElementById('replay-start-offset').value || '').trim(),
+        endOffset: (document.getElementById('replay-end').value || '').trim(),
+        reason: (document.getElementById('replay-reason').value || '').trim()
+      };
+      try {
+        const created = await api('/api/v1/dashboard/replay', 'POST', payload);
+        setText('replay-submit-result', 'Replay queued: ' + (created.id || 'created'));
+        await loadDashboard();
+        showPage('replay');
+      } catch (error) {
+        setText('replay-submit-result', 'Replay failed: ' + error.message);
+      }
+    }
+
+    function renderHeader(summary) {
+      summary = summary || {};
+      var health = summary.health || {};
+      var kafka = health.kafka || {};
+      var registry = health.registry || {};
+      setText('badge-role', 'Role: ' + role);
+      setText('badge-state', 'Status: ' + String(health.status || 'unknown').toUpperCase());
+      setText('stat-consumers', String((state.consumers || []).length));
+      setText('stat-topics', String((state.topics || []).length));
+      setText('stat-dlq', String((state.dlq || []).length));
+      setText('stat-replay', String((state.replay || []).length));
+      setText('registry-meta', 'Registry: ' + (registry.status || 'unknown') + ' | Kafka brokers: ' + (kafka.brokerCount || 0));
+    }
+
+    async function loadDashboard() {
+      setText('badge-msg', 'Loading dashboard...');
+      try {
+        const dashboard = await api('/api/v1/dashboard', 'GET');
+        const consumersApi = await api('/api/v1/consumers', 'GET');
+        state.health = dashboard.health || {};
+        state.topics = dashboard.topics || [];
+        state.consumers = dashboard.consumers || [];
+        state.dlq = dashboard.dlq || [];
+        state.replay = dashboard.replayRequests || [];
+        state.metrics = dashboard.metrics || {};
+        state.registered = Array.isArray(consumersApi) ? consumersApi : [];
+        renderHeader(dashboard);
+        renderPages();
+        setText('badge-msg', 'Dashboard ready');
+      } catch (error) {
+        renderHeader(null);
+        renderPages();
+        setText('badge-msg', 'Failed: ' + error.message);
+      }
+    }
+
+    document.getElementById('toggle-role').addEventListener('click', function () {
+      role = role === 'admin' ? 'viewer' : 'admin';
+      loadDashboard().then(function () { showPage(currentPage); });
+    });
+
+    document.getElementById('refresh').addEventListener('click', function () {
+      loadDashboard().then(function () { showPage(currentPage); });
+    });
+
+    initNav();
+    loadDashboard().then(function () { showPage('cdc'); });
+  </script>
+</body>
+</html>

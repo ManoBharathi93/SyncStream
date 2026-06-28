@@ -1,0 +1,23 @@
+# ─────────────────────────────────────────────────────────
+# Grafana Datasource Auto-Provisioning
+# ─────────────────────────────────────────────────────────
+#
+# Grafana reads this file at startup and registers the
+# datasource automatically. No manual UI steps needed.
+#
+# Why provision via file instead of the UI?
+#   - Reproducible: restart the container and it's still there.
+#   - Version-controlled: the datasource is part of the repo.
+#   - Required for automated dashboard imports to work.
+# ─────────────────────────────────────────────────────────
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

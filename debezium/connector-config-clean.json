@@ -1,0 +1,23 @@
+{
+  "name": "postgres-cdc-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "syncstream",
+    "database.password": "syncstream_pass",
+    "database.dbname": "syncstream_db",
+    "topic.prefix": "syncstream",
+    "slot.name": "debezium_syncstream_slot",
+    "plugin.name": "pgoutput",
+    "table.include.list": "public.products,public.customers,public.orders,public.order_items",
+    "snapshot.mode": "initial",
+    "tombstones.on.delete": "true",
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+    "max.batch.size": "2048",
+    "max.queue.size": "8192",
+    "poll.interval.ms": "500",
+    "heartbeat.interval.ms": "10000"
+  }
+}

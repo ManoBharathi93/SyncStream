@@ -1,0 +1,551 @@
+# ============================================================
+# SyncStream — Local Development Environment
+# ============================================================
+#
+# What this file does:
+#   Stands up every infrastructure component for local CDC
+#   development. No application code runs here — only the
+#   platform services that application code will connect to.
+#
+# Service dependency order:
+#   zookeeper → kafka → kafka-connect (debezium)
+#   postgres  (independent, but debezium depends on it)
+#   redis     (independent, used by Phase 2 consumer)
+#   elasticsearch (independent, used by Phase 3 consumer)
+#
+# Usage:
+#   Start:            docker compose up -d
+#   Stop:             docker compose down
+#   Destroy volumes:  docker compose down -v   ← WARNING: deletes all data
+#   View logs:        docker compose logs -f <service>
+#   Single service:   docker compose up -d postgres
+#
+# Port map (all on localhost):
+#   5432  → PostgreSQL
+#   9092  → Kafka broker (external / host access)
+#   8083  → Debezium / Kafka Connect REST API
+#   6379  → Redis
+#   9200  → Elasticsearch HTTP
+#   8080  → Kafka UI (browser dashboard)
+# ============================================================
+
+services:
+
+  # ─────────────────────────────────────────────────────────
+  # POSTGRESQL — Source of Truth
+  # ─────────────────────────────────────────────────────────
+  #
+  # WHY these specific settings?
+  #
+  # wal_level=logical
+  #   Default is 'replica'. Logical level adds full row images
+  #   (column names + values) to the WAL. Without this, Debezium
+  #   sees THAT something changed but not WHAT changed.
+  #
+  # max_replication_slots=5
+  #   Each Debezium connector claims one slot. We set 5 to allow
+  #   for multiple connectors or experiments without hitting the limit.
+  #
+  # max_wal_senders=5
+  #   Replication connections to PostgreSQL (one per slot consumer).
+  #   Must be >= max_replication_slots.
+  #
+  # wal_keep_size=256
+  #   Keep at least 256MB of WAL on disk even if no slot holds it.
+  #   Safety net for brief Debezium restarts. Does not replace slots.
+  # ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: syncstream-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: syncstream_db
+      POSTGRES_USER: syncstream
+      POSTGRES_PASSWORD: syncstream_pass
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_replication_slots=5
+      -c max_wal_senders=5
+      -c wal_keep_size=256
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syncstream -d syncstream_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ─────────────────────────────────────────────────────────
+  # ZOOKEEPER — Kafka Cluster Coordinator
+  # ─────────────────────────────────────────────────────────
+  #
+  # WHY ZooKeeper instead of KRaft?
+  #   Debezium 2.4's official Docker image for Kafka Connect
+  #   is tested against Confluent Platform, which bundles a
+  #   ZooKeeper-compatible Kafka. KRaft support in Docker Compose
+  #   is available but requires more manual configuration.
+  #
+  #   ZooKeeper is deprecated in Kafka 4.0, but fully functional
+  #   in Kafka 3.x. We use it here to keep setup simple.
+  #   Migrating to KRaft is a clean ADR decision for Phase 5.
+  #
+  # ZooKeeper's role:
+  #   - Leader election for Kafka brokers
+  #   - Cluster metadata storage (which broker owns which partition)
+  #   - Consumer group coordination (pre-KRaft)
+  # ─────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.3
+    container_name: syncstream-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ─────────────────────────────────────────────────────────
+  # KAFKA BROKER — Event Streaming Backbone
+  # ─────────────────────────────────────────────────────────
+  #
+  # LISTENER CONFIGURATION — the most confusing part of Kafka setup.
+  #
+  # Kafka needs two listener addresses:
+  #
+  #   PLAINTEXT (internal):  kafka:29092
+  #     Used by containers talking to Kafka inside the Docker network.
+  #     Debezium connects here. Future Java consumers connect here.
+  #     The hostname "kafka" resolves because Docker creates an internal
+  #     DNS entry for each service name.
+  #
+  #   PLAINTEXT_HOST (external): localhost:9092
+  #     Used by tools running on your host machine (kafka-console-consumer,
+  #     Kafka UI if running outside Docker, etc.)
+  #     "localhost" resolves because port 9092 is published to the host.
+  #
+  # Why two? Because Kafka advertises its address to clients when they
+  # connect. If Debezium (inside Docker) connected to localhost:9092,
+  # it would receive "connect to localhost" as the broker address — but
+  # "localhost" inside Debezium's container means Debezium itself, not Kafka.
+  # Using kafka:29092 internally solves this.
+  #
+  # RETENTION CONFIGURATION:
+  #   log.retention.hours=168    → 7 days (enterprise default)
+  #   log.retention.check.interval.ms=300000  → check every 5 minutes
+  #
+  # IMPORTANT: In production, use replication.factor=3 with 3 brokers.
+  # We use 1 here because this is a single-broker development setup.
+  # offsets.topic.replication.factor=1 and transaction.state.log.replication.factor=1
+  # are required for single-broker Kafka to start without errors.
+  # ─────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.3
+    container_name: syncstream-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "29092:9092"
+    environment:
+      # Identity
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # Listener configuration (read the comment block above carefully)
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Replication (single-broker development values — NOT for production)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Topic auto-creation (convenient for development)
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 3
+
+      # Retention
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+
+      # Performance tuning (development-friendly values)
+      KAFKA_LOG_FLUSH_INTERVAL_MESSAGES: 10000
+      KAFKA_LOG_FLUSH_INTERVAL_MS: 1000
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ─────────────────────────────────────────────────────────
+  # DEBEZIUM / KAFKA CONNECT — CDC Engine
+  # ─────────────────────────────────────────────────────────
+  #
+  # Debezium runs inside the Kafka Connect framework.
+  # Kafka Connect is a platform for running connectors — plugins that
+  # move data between external systems and Kafka.
+  #
+  # Debezium is a Kafka Connect SOURCE connector:
+  #   External system (PostgreSQL) → Kafka
+  #
+  # The three internal topics store Kafka Connect's own state:
+  #
+  #   CONFIG_STORAGE_TOPIC (debezium_connect_configs):
+  #     Stores connector configurations (what tables to watch, etc.)
+  #     Persisted in Kafka so configs survive restarts
+  #
+  #   OFFSET_STORAGE_TOPIC (debezium_connect_offsets):
+  #     Stores the current processing position (LSN) per connector
+  #     This is how Debezium knows where to resume after a restart
+  #
+  #   STATUS_STORAGE_TOPIC (debezium_connect_statuses):
+  #     Stores connector and task health status
+  #     Used by the REST API to report connector state
+  #
+  # REST API:
+  #   Debezium exposes an HTTP API on port 8083 for managing connectors.
+  #   Connectors are NOT configured in this file — they are registered
+  #   by sending a POST request to the REST API (see scripts/register-connector.sh).
+  #   This separation means you can change connector config without
+  #   restarting the Docker container.
+  # ─────────────────────────────────────────────────────────
+  kafka-connect:
+    image: debezium/connect:2.7.3.Final
+    container_name: syncstream-kafka-connect
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      # Connect to Kafka
+      BOOTSTRAP_SERVERS: kafka:29092
+
+      # Consumer group ID for this Kafka Connect worker
+      GROUP_ID: syncstream-connect-cluster
+
+      # Internal state topics (see comment block above)
+      CONFIG_STORAGE_TOPIC: debezium_connect_configs
+      OFFSET_STORAGE_TOPIC: debezium_connect_offsets
+      STATUS_STORAGE_TOPIC: debezium_connect_statuses
+
+      # Replication (single-broker: must be 1)
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+
+      # Enable JSON with schema (makes events self-describing)
+      # Schema is embedded in the Kafka message value.
+      # This is verbose but useful for learning.
+      # In production: use Avro + Schema Registry for compactness.
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+
+      # Logging
+      LOG_LEVEL: INFO
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors > /dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+
+  # ─────────────────────────────────────────────────────────
+  # REDIS — Real-Time Cache (Phase 2 target)
+  # ─────────────────────────────────────────────────────────
+  #
+  # Redis is a sink — our Java consumer will write to it in Phase 2.
+  # In Phase 1, Redis is running but nothing writes to it yet.
+  #
+  # appendonly yes:
+  #   Enables the AOF (Append-Only File) persistence mode.
+  #   Redis writes every command to disk before acknowledging.
+  #   This means Redis survives a restart without data loss.
+  #   (RDB snapshots are the default, but AOF gives stronger durability.)
+  #
+  # Why does durability matter for a cache?
+  #   After a Redis restart without AOF: all cache is cold.
+  #   Your CDC consumer would need to replay from Kafka to repopulate.
+  #   With AOF: Redis recovers its state and consumers don't need to replay.
+  #   For a learning environment, either is fine. We use AOF to teach
+  #   the right production habits.
+  # ─────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: syncstream-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────
+  # ELASTICSEARCH — Search Index (Phase 3 target)
+  # ─────────────────────────────────────────────────────────
+  #
+  # Elasticsearch is a sink — our Java consumer will index documents
+  # into it in Phase 3. In Phase 1, it runs but nothing writes to it.
+  #
+  # discovery.type=single-node:
+  #   Disables multi-node cluster discovery. Required for a single
+  #   development instance. Without this, ES waits forever for
+  #   other nodes and never becomes healthy.
+  #
+  # xpack.security.enabled=false:
+  #   Disables TLS and authentication. Default in ES 8.x is secure.
+  #   We disable it for local development simplicity.
+  #   NEVER disable security in production.
+  #
+  # ES_JAVA_OPTS=-Xms512m -Xmx512m:
+  #   Limits JVM heap. Default is 4GB which is excessive for development.
+  #   512MB is enough for our test data volume.
+  #   If ES crashes with OOM errors during Phase 3, increase to 1g.
+  # ─────────────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.4
+    container_name: syncstream-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=syncstream-cluster
+      - node.name=syncstream-es-node
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -q '\"status\":\"\\(green\\|yellow\\)\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ─────────────────────────────────────────────────────────
+  # KAFKA UI — Visual Dashboard
+  # ─────────────────────────────────────────────────────────
+  #
+  # Kafka UI by Provectus is an open-source browser dashboard for Kafka.
+  # In this project it is essential for learning because:
+  #   - You can see topics, partitions, and offsets visually
+  #   - You can browse messages without a terminal
+  #   - You can watch consumer group lag in real-time
+  #   - You can see what topics Debezium created
+  #
+  # Open http://localhost:8080 after `docker compose up -d`
+  # ─────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: syncstream-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: syncstream-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+
+  # ─────────────────────────────────────────────────────────
+  # KAFKA EXPORTER — Consumer Lag & Topic Metrics
+  # ─────────────────────────────────────────────────────────
+  #
+  # kafka-exporter connects to Kafka via the consumer API (not JMX).
+  # It exposes Prometheus-format metrics on port 9308.
+  #
+  # Key metrics for Story 10 learning objectives:
+  #
+  #   kafka_consumergroup_lag
+  #     How many messages a consumer group is behind the latest offset.
+  #     This is the primary SLA metric for CDC pipelines.
+  #     A value of 0 means the consumer is fully caught up.
+  #     A growing value means the consumer is falling behind.
+  #
+  #   kafka_topic_partition_current_offset
+  #     Latest produced offset per partition — tells you throughput.
+  #
+  #   kafka_topic_partition_oldest_offset
+  #     Earliest retained offset — tells you how much replay headroom exists.
+  #
+  # Why not JMX?
+  #   JMX exports deep broker internals (GC, thread count, disk usage).
+  #   For a CDC platform, consumer lag is far more operationally relevant.
+  #   kafka-exporter gives exactly that without requiring JMX configuration.
+  # ─────────────────────────────────────────────────────────
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: syncstream-kafka-exporter
+    restart: unless-stopped
+    command:
+      - "--kafka.server=kafka:29092"
+      - "--kafka.version=3.0.0"
+    ports:
+      - "9308:9308"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9308/metrics > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ─────────────────────────────────────────────────────────
+  # PROMETHEUS — Metrics Collection Engine
+  # ─────────────────────────────────────────────────────────
+  #
+  # Prometheus is a time-series database built for metrics.
+  # Unlike log-based observability, it stores numeric measurements
+  # at precise timestamps and lets you query them with PromQL.
+  #
+  # Pull vs Push model:
+  #   Prometheus PULLS metrics from targets on a schedule.
+  #   This is different from systems where apps push to a collector.
+  #   Pull means Prometheus controls the collection rate and detects
+  #   when a target has gone silent (can't push because it's dead).
+  #
+  # Storage:
+  #   Metrics are stored in prometheus_data volume with 15-day retention.
+  #   Each scrape appends a new data point per metric per target.
+  #   For our load, this is negligible storage.
+  #
+  # Port 9090:
+  #   Prometheus Web UI — useful for ad-hoc PromQL queries and
+  #   checking that all scrape targets are UP.
+  #   Open http://localhost:9090/targets to see target health.
+  # ─────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: syncstream-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      kafka-exporter:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ─────────────────────────────────────────────────────────
+  # GRAFANA — Metrics Visualization
+  # ─────────────────────────────────────────────────────────
+  #
+  # Grafana queries Prometheus using PromQL and renders the results
+  # as graphs, gauges, and tables on dashboards.
+  #
+  # The datasource is auto-provisioned from:
+  #   monitoring/grafana/provisioning/datasources/prometheus.yml
+  # This means no manual UI configuration is needed on first boot.
+  #
+  # Default credentials: admin / admin
+  # You will be prompted to change the password on first login.
+  # For local development, changing it is optional.
+  #
+  # Port 3000:
+  #   Open http://localhost:3000
+  #   Navigate to Connections → Data sources to confirm Prometheus is wired.
+  #   Navigate to Explore to run PromQL queries interactively.
+  #
+  # GF_USERS_ALLOW_SIGN_UP=false:
+  #   Prevents anonymous users from creating accounts.
+  #   Production-correct default even in development.
+  # ─────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: syncstream-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+
+# ─────────────────────────────────────────────────────────
+# NAMED VOLUMES
+# ─────────────────────────────────────────────────────────
+#
+# Named volumes persist data across `docker compose stop` / `start`.
+# They are removed only with `docker compose down -v`.
+#
+# postgres_data:     All PostgreSQL data files and WAL segments
+# zookeeper_data:    ZooKeeper's snapshot and transaction log
+# zookeeper_log:     ZooKeeper's write-ahead log
+# kafka_data:        Kafka topic data (your CDC events live here)
+# redis_data:        Redis AOF persistence file
+# elasticsearch_data: Elasticsearch indices and documents
+# ─────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+  redis_data:
+  elasticsearch_data:
+  prometheus_data:
+  grafana_data:
